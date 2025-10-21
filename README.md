@@ -1,10 +1,10 @@
 # Email Automation System
 
-A serverless Python application that automatically processes Google Sheets form responses and sends personalized emails to new signups. Built with Google Cloud Run and Cloud Scheduler for reliable daily automation.
+A serverless Python application that automatically processes Google Sheets form responses and sends personalized emails to new signups. Built with Google Cloud Run and Cloud Scheduler for daily automation.
 
-## 📋 Overview
+## Overview
 
-This system monitors a Google Sheets form (SBI General Interest Form) for new responses and automatically sends emails to new signups. It runs daily at 9:00 AM Central Time using Google Cloud's serverless infrastructure.
+This system monitors a Google Sheets form (SBI General Interest Form) for new responses and automatically sends emails to new signups. It runs daily at 9:00 AM Central Time using Google Cloud.
 
 ### Key Features
 
@@ -15,7 +15,7 @@ This system monitors a Google Sheets form (SBI General Interest Form) for new re
 - **Containerized deployment** with Docker
 - **CI/CD pipeline** with GitHub Actions
 
-## 🏗️ Architecture
+## Architecture
 
 ```
 Google Sheets ←→ Python Script ←→ Email Service (SMTP)
@@ -33,7 +33,7 @@ GitHub Actions → Container Registry
 - **Google Secret Manager**: Securely stores API credentials and email passwords
 - **GitHub Actions**: Automated deployment pipeline
 
-## 🚀 Quick Start
+## Quick Start
 
 ### Prerequisites
 
@@ -54,7 +54,7 @@ gcloud services enable sheets.googleapis.com
 gcloud services enable drive.googleapis.com
 ```
 
-## 🛠️ Setup Instructions
+## Setup Instructions
 
 ### 1. Clone and Configure
 
@@ -127,7 +127,7 @@ gcloud projects add-iam-policy-binding $PROJECT_ID \
 Share your Google Sheet with the service account:
 `sheets-automation-sa@your-project-id.iam.gserviceaccount.com` (Editor permissions)
 
-## 📦 Deployment
+## Deployment
 
 ### Automatic Deployment
 
@@ -152,7 +152,7 @@ gcloud scheduler jobs create http daily-email-automation \
   --oauth-service-account-email "scheduler-sa@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
-## 🔧 Configuration
+## Configuration
 
 ### Environment Variables
 
@@ -167,7 +167,7 @@ gcloud scheduler jobs create http daily-email-automation \
 - `sender-email`: SMTP sender email address
 - `google-app-password`: SMTP authentication password
 
-## 📊 Monitoring
+## Monitoring
 
 ### View Logs
 
@@ -189,7 +189,7 @@ gcloud scheduler jobs list --location us-central1
 gcloud scheduler jobs describe daily-email-automation --location us-central1
 ```
 
-## 🧪 Testing
+## Testing
 
 ### Manual Testing
 
@@ -213,14 +213,7 @@ gcloud scheduler jobs create http test-email-job-1min \
   --oauth-service-account-email "scheduler-sa@$PROJECT_ID.iam.gserviceaccount.com"
 ```
 
-## 🔒 Security
-
-- **Secret Management**: All credentials stored in Google Secret Manager
-- **Least Privilege**: Service accounts have minimal required permissions
-- **No Hardcoded Secrets**: Credentials never stored in code or containers
-- **Audit Trail**: All API calls and job executions are logged
-
-## 🛠️ Development
+## Development
 
 ### Local Development
 
@@ -249,7 +242,7 @@ python main.py
 └── uv.lock                # Lockfile for reproducible builds
 ```
 
-## 🐛 Troubleshooting
+## Troubleshooting
 
 ### Common Issues
 
@@ -260,55 +253,9 @@ python main.py
 | `invalid_grant: account not found` | Recreate service account credentials |
 | `Permission denied` | Check IAM permissions for service accounts |
 
-### Debug Commands
+## Contributing
 
-```bash
-# Check service account permissions
-gcloud projects get-iam-policy $PROJECT_ID \
-  --flatten="bindings[].members" \
-  --filter="bindings.members:serviceAccount:$EMAIL_SA"
-
-# Verify secrets exist
-gcloud secrets list
-
-# Test secret access
-gcloud secrets versions access latest --secret SERVICE_ACCOUNT_FILE
-```
-
-## 📈 Maintenance
-
-### Regular Tasks
-
-- **Monitor execution logs** for errors or failures
-- **Review email delivery rates** and success metrics
-- **Update dependencies** in `pyproject.toml` periodically
-- **Rotate service account keys** annually for security
-- **Review and clean up** old Cloud Run revisions
-
-### Cost Optimization
-
-- Monitor Cloud Run execution time and memory usage
-- Review Cloud Scheduler execution frequency if needed
-- Clean up unused secrets and service accounts
-
-## 🤝 Contributing
-
-1. **Fork the repository**
-2. **Create a feature branch**: `git checkout -b feature/your-feature`
-3. **Make changes and test thoroughly**
-4. **Ensure all secrets and credentials are properly configured**
-5. **Submit a pull request with detailed description**
-
-### Code Standards
-
-- Follow Python PEP 8 style guidelines
-- Add logging for debugging and monitoring
-- Update documentation for any configuration changes
-- Test changes with manual job execution before deploying
-
-## 📄 License
-
-This project is internal to the company. All rights reserved.
-
-**⚠️ Important**: This system handles email automation and personal data. Ensure compliance with privacy regulations and company policies when making modifications.
-
+1. **Create a feature branch**: `git checkout -b feature/your-feature`
+2. **Make changes and test thoroughly**
+3. **Ensure all secrets and credentials are properly configured**
+4. **Submit a pull request with a detailed description**
