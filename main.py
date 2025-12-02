@@ -10,11 +10,19 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.image import MIMEImage
 from datetime import datetime
 
+# ESEOHE ------------------------------------------------------------
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+# ESEOHE ------------------------------------------------------------
+
 #--- CONFIG ---
 GOOGLE_SHEET_NAME = "SBI General Interest Form (Responses)"
 LOGO_FILE = "EmailSignature.gif"
 SMTP_SERVER = "smtp.gmail.com"
 SMTP_PORT = 587
+# ESEOHE ------------------------------------------------------------
+SCOPES = ["https://www.googleapis.com/auth/calendar"]
+# ESEOHE ------------------------------------------------------------
 
 
 def get_secret(secret_id):
@@ -51,7 +59,7 @@ def get_new_signups():
         
         # Get all records from the sheet and convert to a pandas DataFrame
         records = sh.get_all_records()
-        print(f"Total records found: {len(records)}")
+        # print(f"Total records found: {len(records)}")
         
         df = pd.DataFrame(records)
         print(f"DataFrame shape: {df.shape}")
@@ -213,6 +221,20 @@ def update_email_sent_status(sheet, row_index):
 
 
 def main():    
+
+    # ESEOHE ------------------------------------------------------------
+    print("TEST TEST TEST")
+    credentials_json = get_secret("CALENDAR_SERVICE_ACCOUNT_FILE")
+    creds_dict = json.loads(credentials_json)
+    creds = service_account.Credentials.from_service_account_info(
+        creds_dict,
+        scopes=SCOPES
+    )
+    service = build("calendar", "v3", credentials=creds)
+    calendar_id = "eseoheaigberadion@gmail.com"
+    print(f"Calendar service initialized for {calendar_id}")
+    # ESEOHE ------------------------------------------------------------
+
     # Get new signups from Google Sheets
     sheet, new_signups_df = get_new_signups()
     
@@ -247,7 +269,24 @@ def main():
                 print(f"Email sent to {name} but failed to update sheet")
         else:
             print(f"Failed to process {name}")
-    
+
+        # ESEOHE ------------------------------------------------------------
+        print(f"Attempting to create calendar event for {email}")
+        event = {
+            "summary": "SBI Interview",
+            "start": {"dateTime": "2025-01-15T12:00:00-06:00"},
+            "end": {"dateTime": "2025-01-15T13:00:00-06:00"},
+            "attendees": [{"email": email}],
+        }
+        print(f"Event details: {event}")
+        created = service.events().insert(
+            calendarId=calendar_id,
+            body=event,
+            sendUpdates="all"
+        ).execute()
+        print(f"Event created successfully: {created['htmlLink']}")
+        # ESEOHE ------------------------------------------------------------
+
     print("Email automation process completed.")
 
 if __name__ == "__main__":

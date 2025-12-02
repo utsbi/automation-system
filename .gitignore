@@ -102,4 +102,4 @@ test_main.py
 # /data/
 
 # exclude lancedb from source control by default
-lancedb/
+lancedb/sheets-credentials.json
