@@ -28,16 +28,9 @@ DEPARTMENT_CALENDARS = {
     'Legal': 'eseoheaigberadion@gmail.com',
 }
 
-# Department-specific meeting locations
-DEPARTMENT_LOCATIONS = {
-    'Research and Development': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Finance': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Tech': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Engineering': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Architecture': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Public Relations': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-    'Legal': 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA',
-}
+# Department-specific meeting locations are now managed in Google Sheets "Locations" tab
+# Default fallback location if sheet is not configured
+DEFAULT_LOCATION = 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA'
 
 SCOPES = ["https://www.googleapis.com/auth/calendar"]
 
@@ -109,6 +102,62 @@ def get_director_availability(department):
         traceback.print_exc()
         return []
 
+def get_department_location(department):
+    """Get meeting location from Google Sheets for a specific department."""
+    try:
+        # Get credentials from Secret Manager
+        credentials_json = get_secret("SERVICE_ACCOUNT_FILE")
+        credentials_dict = json.loads(credentials_json)
+        
+        # Create temporary file for gspread
+        with open('/tmp/credentials.json', 'w') as f:
+            json.dump(credentials_dict, f)
+        
+        gc = gspread.service_account(filename='/tmp/credentials.json')
+        
+        # Open the spreadsheet and the Locations tab
+        sh = gc.open("SBI General Interest Form (Responses)").worksheet("Locations")
+        
+        # Get all values from the sheet
+        all_values = sh.get_all_values()
+        
+        if not all_values or len(all_values) < 1:
+            print("No data in Locations sheet")
+            return "McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA"  # Default fallback
+        
+        # First row contains department headers
+        headers = all_values[0]
+        
+        # Find the column index for the department
+        try:
+            dept_col_index = headers.index(department)
+        except ValueError:
+            print(f"Department '{department}' not found in Locations headers: {headers}")
+            return "McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA"  # Default fallback
+        
+        # Get location from that column (combine all non-empty rows under the header)
+        location_parts = []
+        for row in all_values[1:]:
+            if dept_col_index < len(row):
+                location_part = row[dept_col_index].strip()
+                if location_part:
+                    location_parts.append(location_part)
+        
+        # Join with commas or newlines depending on format
+        if location_parts:
+            location = ", ".join(location_parts) if len(location_parts) > 1 else location_parts[0]
+            print(f"Location for {department}: {location}")
+            return location
+        else:
+            print(f"No location set for {department}, using default")
+            return "McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA"  # Default fallback
+        
+    except Exception as e:
+        print(f"Error fetching location for {department}: {e}")
+        import traceback
+        traceback.print_exc()
+        return "McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA"  # Default fallback
+
 def parse_time_string(time_str):
     """Parse time string like '10AM' or '6PM' into hour (24-hour format)."""
     time_str = time_str.strip().upper()
@@ -132,6 +181,88 @@ def parse_time_string(time_str):
     
     return hour, minute
 
+def parse_availability_block(block):
+    """
+    Parse availability block into date(s) and time range.
+    Supports formats:
+    - "10AM-6PM" (no date, applies to all dates)
+    - "2/11&10AM-6PM" (specific date)
+    - "2/11/2025&10AM-6PM" (specific date with year)
+    - "2/11-2/15&10AM-6PM" (date range)
+    
+    Returns: (start_date, end_date, start_time_str, end_time_str)
+    - If no date specified: (None, None, "10AM", "6PM")
+    - If single date: (date_obj, date_obj, "10AM", "6PM")
+    - If date range: (start_date_obj, end_date_obj, "10AM", "6PM")
+    """
+    block = block.strip()
+    
+    # Check if block contains date (has & delimiter)
+    if '&' in block:
+        date_part, time_part = block.split('&', 1)
+        
+        # Check if it's a date range (has -)
+        if '-' in date_part and '/' in date_part:
+            # This is a date range like "2/11-2/15"
+            date_parts = date_part.split('-')
+            if len(date_parts) == 2:
+                start_date_str = date_parts[0].strip()
+                end_date_str = date_parts[1].strip()
+                
+                try:
+                    # Parse start date
+                    start_date = parse_date_string(start_date_str)
+                    # Parse end date
+                    end_date = parse_date_string(end_date_str)
+                    
+                    return (start_date, end_date, time_part.strip())
+                except:
+                    print(f"Could not parse date range: {date_part}")
+                    return (None, None, block)
+        else:
+            # Single date like "2/11" or "2/11/2025"
+            try:
+                date = parse_date_string(date_part.strip())
+                return (date, date, time_part.strip())
+            except:
+                print(f"Could not parse date: {date_part}")
+                return (None, None, block)
+    else:
+        # No date specified, applies to all dates
+        return (None, None, block)
+
+def parse_date_string(date_str):
+    """
+    Parse date string in various formats:
+    - "2/11" → Feb 11 of current year
+    - "2/11/2025" → Feb 11, 2025
+    - "2025-02-11" → Feb 11, 2025
+    """
+    from datetime import datetime
+    
+    date_str = date_str.strip()
+    
+    # Try ISO format first (2025-02-11)
+    try:
+        return datetime.strptime(date_str, '%Y-%m-%d').date()
+    except:
+        pass
+    
+    # Try M/D/YYYY format
+    try:
+        return datetime.strptime(date_str, '%m/%d/%Y').date()
+    except:
+        pass
+    
+    # Try M/D format (assume current year)
+    try:
+        current_year = datetime.now().year
+        return datetime.strptime(f"{date_str}/{current_year}", '%m/%d/%Y').date()
+    except:
+        pass
+    
+    raise ValueError(f"Could not parse date: {date_str}")
+
 def is_slot_available(slot_start, availability_blocks, date_str):
     """Check if a time slot falls within any of the director's availability blocks."""
     if not availability_blocks:
@@ -139,14 +270,26 @@ def is_slot_available(slot_start, availability_blocks, date_str):
         return True
     
     slot_time = datetime.fromisoformat(slot_start)
+    slot_date = slot_time.date()
     
     for block in availability_blocks:
-        # Parse blocks like "10AM-6PM" or "8PM-9PM"
-        if '-' not in block:
-            continue
-        
         try:
-            start_str, end_str = block.split('-')
+            # Parse the availability block
+            start_date, end_date, time_range = parse_availability_block(block)
+            
+            # Check date match
+            if start_date is not None and end_date is not None:
+                # Date-specific availability
+                if not (start_date <= slot_date <= end_date):
+                    # Slot date is outside the specified date range
+                    continue
+            # If start_date and end_date are None, it applies to all dates
+            
+            # Now check time range
+            if '-' not in time_range:
+                continue
+            
+            start_str, end_str = time_range.split('-')
             
             start_hour, start_minute = parse_time_string(start_str)
             end_hour, end_minute = parse_time_string(end_str)
@@ -289,6 +432,9 @@ def booking_page():
     # Get director availability for this department
     availability_blocks = get_director_availability(department)
     
+    # Get location for this department
+    location = get_department_location(department)
+    
     # Filter time slots based on director availability
     time_slots = []
     for slot in all_time_slots:
@@ -327,6 +473,13 @@ def booking_page():
                 padding: 15px;
                 border-left: 4px solid #0066cc;
                 margin-bottom: 20px;
+            }
+            .location-note {
+                background-color: #fff9e6;
+                border-left: 4px solid #ffcc00;
+                padding: 12px;
+                margin-bottom: 20px;
+                font-size: 14px;
             }
             .date-selector {
                 margin: 20px 0;
@@ -373,7 +526,12 @@ def booking_page():
             <div class="info">
                 <strong>Name:</strong> {{ name }}<br>
                 <strong>Email:</strong> {{ email }}<br>
-                <strong>Department:</strong> {{ department }}
+                <strong>Department:</strong> {{ department }}<br>
+                <strong>Location:</strong> {{ location }}
+            </div>
+            
+            <div class="location-note">
+                📍 <strong>Note:</strong> We will message you through text beforehand about the exact meeting location, or if the location changes.
             </div>
             
             <div class="date-selector">
@@ -395,6 +553,7 @@ def booking_page():
                     <input type="hidden" name="start_time" value="{{ slot.start }}">
                     <input type="hidden" name="end_time" value="{{ slot.end }}">
                     <input type="hidden" name="selected_date" value="{{ selected_date }}">
+                    <input type="hidden" name="location" value="{{ location }}">
                     <button type="submit" class="time-slot">{{ slot.display }}</button>
                 </form>
                 {% endfor %}
@@ -417,6 +576,7 @@ def booking_page():
         name=name,
         email=email,
         department=department,
+        location=location,
         selected_date=selected_date,
         tomorrow=tomorrow,
         time_slots=time_slots
@@ -432,8 +592,12 @@ def confirm_booking():
     end_time = request.form.get('end_time')
     booking_id = request.form.get('booking_id')
     selected_date = request.form.get('selected_date')
+    location = request.form.get('location')
     
-    location = DEPARTMENT_LOCATIONS.get(department, 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA')
+    # If location wasn't passed, get it from Google Sheets
+    if not location:
+        location = get_department_location(department)
+    
     start_dt = datetime.fromisoformat(start_time)
     end_dt = datetime.fromisoformat(end_time)
     
@@ -547,6 +711,7 @@ def confirm_booking():
                     <input type="hidden" name="department" value="{department}">
                     <input type="hidden" name="start_time" value="{start_time}">
                     <input type="hidden" name="end_time" value="{end_time}">
+                    <input type="hidden" name="location" value="{location}">
                     <button type="submit" class="btn btn-confirm">
                         ✓ Yes, Book This Time
                     </button>
@@ -571,9 +736,13 @@ def create_booking():
     department = request.form.get('department')
     start_time = request.form.get('start_time')
     end_time = request.form.get('end_time')
+    location = request.form.get('location')
+    
+    # If location wasn't passed, get it from Google Sheets
+    if not location:
+        location = get_department_location(department)
     
     calendar_id = DEPARTMENT_CALENDARS.get(department, 'eseoheaigberadion@gmail.com')
-    location = DEPARTMENT_LOCATIONS.get(department, 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA')
     
     try:
         # Create calendar event on YOUR calendar
