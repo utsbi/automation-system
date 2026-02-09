@@ -12,6 +12,8 @@ from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
 from email import encoders
 import ssl
+import gspread
+import re
 
 app = Flask(__name__)
 
@@ -56,6 +58,119 @@ def get_calendar_service():
         scopes=SCOPES
     )
     return build("calendar", "v3", credentials=creds)
+
+def get_director_availability(department):
+    """Get director availability from Google Sheets for a specific department."""
+    try:
+        # Get credentials from Secret Manager
+        credentials_json = get_secret("SERVICE_ACCOUNT_FILE")
+        credentials_dict = json.loads(credentials_json)
+        
+        # Create temporary file for gspread
+        with open('/tmp/credentials.json', 'w') as f:
+            json.dump(credentials_dict, f)
+        
+        gc = gspread.service_account(filename='/tmp/credentials.json')
+        
+        # Open the spreadsheet and the Director Availability tab
+        sh = gc.open("SBI General Interest Form (Responses)").worksheet("Director Availability")
+        
+        # Get all values from the sheet
+        all_values = sh.get_all_values()
+        
+        if not all_values or len(all_values) < 1:
+            print("No data in Director Availability sheet")
+            return []
+        
+        # First row contains department headers
+        headers = all_values[0]
+        
+        # Find the column index for the department
+        try:
+            dept_col_index = headers.index(department)
+        except ValueError:
+            print(f"Department '{department}' not found in headers: {headers}")
+            return []
+        
+        # Get all availability blocks from that column (skip header row)
+        availability_blocks = []
+        for row in all_values[1:]:
+            if dept_col_index < len(row):
+                time_block = row[dept_col_index].strip()
+                if time_block:  # Only add non-empty blocks
+                    availability_blocks.append(time_block)
+        
+        print(f"Director availability for {department}: {availability_blocks}")
+        return availability_blocks
+        
+    except Exception as e:
+        print(f"Error fetching director availability: {e}")
+        import traceback
+        traceback.print_exc()
+        return []
+
+def parse_time_string(time_str):
+    """Parse time string like '10AM' or '6PM' into hour (24-hour format)."""
+    time_str = time_str.strip().upper()
+    
+    # Match patterns like 10AM, 6PM, 11:30PM, etc.
+    match = re.match(r'(\d{1,2})(?::(\d{2}))?\s*(AM|PM)', time_str)
+    
+    if not match:
+        print(f"Could not parse time string: {time_str}")
+        return None, None
+    
+    hour = int(match.group(1))
+    minute = int(match.group(2)) if match.group(2) else 0
+    period = match.group(3)
+    
+    # Convert to 24-hour format
+    if period == 'PM' and hour != 12:
+        hour += 12
+    elif period == 'AM' and hour == 12:
+        hour = 0
+    
+    return hour, minute
+
+def is_slot_available(slot_start, availability_blocks, date_str):
+    """Check if a time slot falls within any of the director's availability blocks."""
+    if not availability_blocks:
+        # If no availability is set, show all slots
+        return True
+    
+    slot_time = datetime.fromisoformat(slot_start)
+    
+    for block in availability_blocks:
+        # Parse blocks like "10AM-6PM" or "8PM-9PM"
+        if '-' not in block:
+            continue
+        
+        try:
+            start_str, end_str = block.split('-')
+            
+            start_hour, start_minute = parse_time_string(start_str)
+            end_hour, end_minute = parse_time_string(end_str)
+            
+            if start_hour is None or end_hour is None:
+                continue
+            
+            # Create datetime objects for the availability block
+            date = datetime.strptime(date_str, '%Y-%m-%d')
+            block_start = date.replace(hour=start_hour, minute=start_minute, second=0, microsecond=0)
+            block_end = date.replace(hour=end_hour, minute=end_minute, second=0, microsecond=0)
+            
+            # Check if slot falls within this availability block
+            slot_end = slot_time + timedelta(minutes=30)
+            
+            # Slot is available if it starts at or after block_start and ends at or before block_end
+            if slot_time >= block_start and slot_end <= block_end:
+                return True
+        
+        except Exception as e:
+            print(f"Error parsing availability block '{block}': {e}")
+            continue
+    
+    return False
 
 def generate_time_slots(date_str):
     """Generate 30-min time slots from 9am to 9pm."""
@@ -168,7 +283,19 @@ def booking_page():
     tomorrow = (datetime.now() + timedelta(days=1)).strftime('%Y-%m-%d')
     selected_date = request.args.get('date', tomorrow)
     
-    time_slots = generate_time_slots(selected_date)
+    # Generate all possible time slots
+    all_time_slots = generate_time_slots(selected_date)
+    
+    # Get director availability for this department
+    availability_blocks = get_director_availability(department)
+    
+    # Filter time slots based on director availability
+    time_slots = []
+    for slot in all_time_slots:
+        if is_slot_available(slot['start'], availability_blocks, selected_date):
+            time_slots.append(slot)
+    
+    print(f"Showing {len(time_slots)} available slots out of {len(all_time_slots)} total slots")
     
     html = '''
     <!DOCTYPE html>
@@ -230,6 +357,14 @@ def booking_page():
             .time-slot:hover {
                 background-color: #0052a3;
             }
+            .no-slots {
+                background-color: #fff3cd;
+                border: 1px solid #ffc107;
+                padding: 20px;
+                border-radius: 5px;
+                text-align: center;
+                margin-top: 20px;
+            }
         </style>
     </head>
     <body>
@@ -249,19 +384,27 @@ def booking_page():
             </div>
             
             <h2>Available Time Slots</h2>
+            {% if time_slots %}
             <div class="time-grid">
                 {% for slot in time_slots %}
-                <form method="POST" action="/book" style="margin: 0;">
+                <form method="POST" action="/confirm" style="margin: 0;">
                     <input type="hidden" name="booking_id" value="{{ booking_id }}">
                     <input type="hidden" name="name" value="{{ name }}">
                     <input type="hidden" name="email" value="{{ email }}">
                     <input type="hidden" name="department" value="{{ department }}">
                     <input type="hidden" name="start_time" value="{{ slot.start }}">
                     <input type="hidden" name="end_time" value="{{ slot.end }}">
+                    <input type="hidden" name="selected_date" value="{{ selected_date }}">
                     <button type="submit" class="time-slot">{{ slot.display }}</button>
                 </form>
                 {% endfor %}
             </div>
+            {% else %}
+            <div class="no-slots">
+                <strong>No available time slots for this date.</strong><br>
+                The director is not available on this date. Please select a different date.
+            </div>
+            {% endif %}
         </div>
     </body>
     </html>
@@ -278,6 +421,148 @@ def booking_page():
         tomorrow=tomorrow,
         time_slots=time_slots
     )
+
+@app.route('/confirm', methods=['POST'])
+def confirm_booking():
+    """Show confirmation page before booking."""
+    name = request.form.get('name')
+    email = request.form.get('email')
+    department = request.form.get('department')
+    start_time = request.form.get('start_time')
+    end_time = request.form.get('end_time')
+    booking_id = request.form.get('booking_id')
+    selected_date = request.form.get('selected_date')
+    
+    location = DEPARTMENT_LOCATIONS.get(department, 'McCombs School of Business, 2110 Speedway, Austin, TX 78705, USA')
+    start_dt = datetime.fromisoformat(start_time)
+    end_dt = datetime.fromisoformat(end_time)
+    
+    confirmation_html = f'''
+    <!DOCTYPE html>
+    <html>
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Confirm Your Interview Time</title>
+        <style>
+            body {{
+                font-family: Arial, sans-serif;
+                max-width: 600px;
+                margin: 50px auto;
+                padding: 20px;
+                background-color: #f5f5f5;
+            }}
+            .container {{
+                background: white;
+                padding: 30px;
+                border-radius: 10px;
+                box-shadow: 0 2px 10px rgba(0,0,0,0.1);
+            }}
+            h1 {{
+                color: #0066cc;
+                margin-bottom: 20px;
+            }}
+            .confirmation-box {{
+                background-color: #fff9e6;
+                border: 2px solid #ffcc00;
+                padding: 20px;
+                border-radius: 8px;
+                margin: 20px 0;
+            }}
+            .detail-row {{
+                margin: 10px 0;
+                font-size: 16px;
+            }}
+            .detail-row strong {{
+                display: inline-block;
+                width: 120px;
+            }}
+            .button-container {{
+                display: flex;
+                gap: 15px;
+                margin-top: 30px;
+                justify-content: center;
+            }}
+            .btn {{
+                padding: 15px 30px;
+                font-size: 16px;
+                font-weight: bold;
+                border: none;
+                border-radius: 5px;
+                cursor: pointer;
+                text-decoration: none;
+                display: inline-block;
+                transition: background-color 0.3s;
+            }}
+            .btn-confirm {{
+                background-color: #28a745;
+                color: white;
+            }}
+            .btn-confirm:hover {{
+                background-color: #218838;
+            }}
+            .btn-cancel {{
+                background-color: #dc3545;
+                color: white;
+            }}
+            .btn-cancel:hover {{
+                background-color: #c82333;
+            }}
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <h1>⚠️ Confirm Your Interview Time</h1>
+            
+            <p style="font-size: 18px; margin-bottom: 20px;">
+                Are you sure you want to book this interview time?
+            </p>
+            
+            <div class="confirmation-box">
+                <div class="detail-row">
+                    <strong>Name:</strong> {name}
+                </div>
+                <div class="detail-row">
+                    <strong>Email:</strong> {email}
+                </div>
+                <div class="detail-row">
+                    <strong>Department:</strong> {department}
+                </div>
+                <div class="detail-row">
+                    <strong>Date:</strong> {start_dt.strftime('%B %d, %Y')}
+                </div>
+                <div class="detail-row">
+                    <strong>Time:</strong> {start_dt.strftime('%I:%M %p')} - {end_dt.strftime('%I:%M %p')} CST
+                </div>
+                <div class="detail-row">
+                    <strong>Location:</strong> {location}
+                </div>
+            </div>
+            
+            <div class="button-container">
+                <form method="POST" action="/book" style="margin: 0;">
+                    <input type="hidden" name="booking_id" value="{booking_id}">
+                    <input type="hidden" name="name" value="{name}">
+                    <input type="hidden" name="email" value="{email}">
+                    <input type="hidden" name="department" value="{department}">
+                    <input type="hidden" name="start_time" value="{start_time}">
+                    <input type="hidden" name="end_time" value="{end_time}">
+                    <button type="submit" class="btn btn-confirm">
+                        ✓ Yes, Book This Time
+                    </button>
+                </form>
+                
+                <a href="/?id={booking_id}&name={quote(name)}&email={quote(email)}&dept={quote(department)}&date={selected_date}" 
+                   class="btn btn-cancel">
+                    ✗ No, Choose Different Time
+                </a>
+            </div>
+        </div>
+    </body>
+    </html>
+    '''
+    
+    return confirmation_html
 
 @app.route('/book', methods=['POST'])
 def create_booking():
